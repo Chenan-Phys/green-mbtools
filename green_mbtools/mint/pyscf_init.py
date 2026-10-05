@@ -299,7 +299,8 @@ class pyscf_pbc_init (pyscf_init):
         results={}
         for name,path,corrected in (("hf",self.args.hf_int_path,False),("correlation",self.args.int_path,True)):
             results[name]=build_representative_archive(self.cell,self.kmesh,provider.auxbasis,path,work/name,
-                corrected=corrected,stored_x=stored_x,producer_revision=revision.stdout.strip(),mesh=provider.mesh)
+                corrected=corrected,stored_x=stored_x,producer_revision=revision.stdout.strip(),mesh=provider.mesh,
+                backend=self.args.df_backend)
         if results["hf"]["input_fingerprint"] != results["correlation"]["input_fingerprint"]:
             raise ValueError("Produced HF/correlation input identities differ")
         with h5py.File(self.args.output_path,"a") as file:

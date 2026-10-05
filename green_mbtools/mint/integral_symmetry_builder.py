@@ -10,17 +10,61 @@ from pathlib import Path
 from types import SimpleNamespace
 import json
 import time
+import threading
 
 import h5py
 import numpy as np
 from pyscf.pbc import df
 from pyscf.pbc.df.gdf_builder import _CCGDFBuilder
+from pyscf.pbc.df.rsdf_builder import _RSGDFBuilder
 from pyscf.pbc.lib.kpts_helper import kk_adapted_iter
 
 from .integral_symmetry import IntegerMesh, build_pair_orbits, integral_kstruct, validated_cell_operations
 from .integral_symmetry_geometry import PhysicalPairMap, MatrixCache
 from .integral_symmetry_transform import CholeskyGauge
 from .integral_symmetry_io import write_archive
+
+_legacy_capture_lock=threading.Lock()
+
+
+def build_captured_legacy_ewald(cell,kpts,auxbasis,pairs,path,mesh=None):
+    """Use GREEN's exact corrected q=0 routine; capture its actual CD solve.
+
+    Only this module's scipy reference is proxied. Shared scipy functions are
+    never patched. Class hooks and module ownership are restored on exceptions.
+    Unrelated legacy builds must not run inside this scoped producer context.
+    """
+    import green_igen.df as legacy
+    from .integral_utils import weighted_coulG_ewald
+    if not _legacy_capture_lock.acquire(blocking=False):
+        raise RuntimeError("Concurrent legacy Ewald capture contexts are unsupported")
+    missing=object();saved=[(cls,cls.__dict__.get("weighted_coulG",missing)) for cls in (df.GDF,legacy.GDF)]
+    scipy_original=legacy.scipy;captured=[]
+    class LinalgProxy:
+        def __getattr__(self,name):return getattr(scipy_original.linalg,name)
+        def cholesky(self,metric,*args,**kwargs):
+            value=scipy_original.linalg.cholesky(metric,*args,**kwargs)
+            captured.append(np.array(value,dtype=complex,copy=True))
+            return value
+    try:
+        provider=df.GDF(cell,kpts);provider.auxbasis=auxbasis;provider.exxdiv="ewald"
+        if mesh is not None:provider.mesh=np.asarray(mesh)
+        auxcell=legacy.make_modrho_basis(cell,auxbasis,provider.exp_to_discard)
+        df.GDF.weighted_coulG=weighted_coulG_ewald
+        legacy.scipy=SimpleNamespace(linalg=LinalgProxy())
+        legacy._make_j3c(provider,cell,auxcell,np.asarray([(kpts[i],kpts[j]) for i,j in pairs]),str(path))
+    finally:
+        legacy.scipy=scipy_original
+        for cls,value in reversed(saved):
+            if value is missing:
+                if "weighted_coulG" in cls.__dict__:delattr(cls,"weighted_coulG")
+            else:cls.weighted_coulG=value
+        _legacy_capture_lock.release()
+    if len(captured)!=1 or captured[0].shape!=(auxcell.nao_nr(),)*2:
+        raise ValueError("Legacy Ewald must use one positive full-rank captured Cholesky factor")
+    gauge=CholeskyGauge(captured[0],"actual-legacy-Ewald-q0","ewald-Coulomb")
+    provider.auxcell=auxcell;provider._cderi=str(path)
+    return provider,gauge
 
 
 class CapturedGauges(Mapping):
@@ -44,7 +88,8 @@ class RepresentativeCCGDFBuilder(_CCGDFBuilder):
     def weighted_coulG(self,kpt,exx,mesh,omega=None):
         return super().weighted_coulG(kpt,"ewald" if self.corrected else exx,mesh,omega)
     def gen_uniq_kpts_groups(self,j_only,h5swap,kk_idx=None):
-        if j_only or kk_idx is None:
+        if kk_idx is None and len(self.kpts)==1:kk_idx=np.array([0],dtype=np.int32)
+        if (j_only and len(self.kpts)>1) or kk_idx is None:
             raise ValueError("Representative build requires an explicit ordered-pair subset")
         nk=len(self.kpts)
         selected=set(map(int,kk_idx))
@@ -78,7 +123,14 @@ class RepresentativeCCGDFBuilder(_CCGDFBuilder):
                         yield q,retained,(factor,negative,tag)
 
 
-def build_representative_archive(cell,kpts,auxbasis,output,work,*,corrected=False,
+class RepresentativeRSGDFBuilder(_RSGDFBuilder):
+    """Same pair restriction/capture contract with PySCF's actual RS builder."""
+    gen_uniq_kpts_groups=RepresentativeCCGDFBuilder.gen_uniq_kpts_groups
+    def weighted_coulG(self,kpt,exx,mesh,omega=None):
+        return super().weighted_coulG(kpt,"ewald" if self.corrected else exx,mesh,omega)
+
+
+def build_representative_archive(cell,kpts,auxbasis,output,work,*,corrected=False,backend="ccgdf",
                                  stored_x=None,producer_revision,chunk_size=32,
                                  reference_get_factor=None,mesh=None):
     """Build a fresh ordinary or Ewald set without replacing a complete cache."""
@@ -94,19 +146,37 @@ def build_representative_archive(cell,kpts,auxbasis,output,work,*,corrected=Fals
                             validated_cell_operations(cell,kstruct),time_reversal=True,exchange=True)
     auxcell=df.df.make_modrho_basis(cell,auxbasis)
     work.mkdir(parents=True)
-    builder=RepresentativeCCGDFBuilder(cell,auxcell,kpts)
-    builder.corrected=bool(corrected)
+    builders={"ccgdf":RepresentativeCCGDFBuilder,"rsgdf":RepresentativeRSGDFBuilder}
+    if backend not in builders:raise ValueError("Unknown representative DF backend")
+    builder=builders[backend](cell,auxcell,kpts)
+    builder.corrected=False  # The default corrected sector is GREEN's legacy routine below.
     builder.kernel_id="ewald-Coulomb" if corrected else "ordinary-Coulomb"
     builder.gauge_file=str(work/"captured-gauges.h5")
     builder.qpts,builder.pair_q=[],{}
     builder.metric_seconds,builder.three_center_pairs=0.,0
     builder.j2c_eig_always=False
     if mesh is not None: builder.mesh=np.asarray(mesh)
-    pairs=np.array([(kpts[i],kpts[j]) for i,j in orbits.representatives])
+    diagonal=[(int(i),int(j)) for i,j in orbits.representatives if i==j]
+    selected=[(int(i),int(j)) for i,j in orbits.representatives if not corrected or i!=j]
+    pairs=np.array([(kpts[i],kpts[j]) for i,j in selected])
     started=time.perf_counter()
-    builder.make_j3c(str(work/"representatives-cderi.h5"),kptij_lst=pairs,aosym="s1")
+    if selected:builder.make_j3c(str(work/"representatives-cderi.h5"),kptij_lst=pairs,aosym="s1")
+    corrected_provider=None
+    corrected_seconds=0.
+    if corrected:
+        corrected_started=time.perf_counter()
+        corrected_provider,q0_gauge=build_captured_legacy_ewald(cell,kpts,auxbasis,diagonal,work/"legacy-ewald-cderi.h5",mesh)
+        corrected_seconds=time.perf_counter()-corrected_started
+        if not selected:
+            builder.qpts=[np.zeros(3)];builder.pair_q={(0,0):0}
+        q0=[i for i,q in enumerate(builder.qpts) if np.linalg.norm(q)<1e-9]
+        if len(q0)!=1:raise ValueError("Captured mesh must contain one q=0 frame")
+        with h5py.File(builder.gauge_file,"a") as file:
+            key=f"C/{q0[0]}"
+            if key in file:del file[key]
+            file[key]=q0_gauge.unwhitening
     build_seconds=time.perf_counter()-started
-    if builder.three_center_pairs!=len(orbits.representatives):
+    if builder.three_center_pairs+(len(diagonal) if corrected else 0)!=len(orbits.representatives):
         raise ValueError("Builder did not restrict three-center production to representatives")
     gauges=CapturedGauges(builder.gauge_file,len(builder.qpts),builder.kernel_id)
     geometry=PhysicalPairMap(cell,auxcell,kpts,np.asarray(builder.qpts),builder.pair_q,gauges,set_id=str(work))
@@ -115,7 +185,8 @@ def build_representative_archive(cell,kpts,auxbasis,output,work,*,corrected=Fals
     provider=df.GDF(cell,kpts);provider.auxcell=auxcell;provider._cderi=str(work/"representatives-cderi.h5")
     def get_factor(i,j):
         blocks=[]
-        for real,imag,sign in provider.sr_loop((kpts[i],kpts[j]),compact=False):
+        reader=corrected_provider if corrected and i==j else provider
+        for real,imag,sign in reader.sr_loop((kpts[i],kpts[j]),compact=False):
             if sign!=1: raise ValueError("Negative metric sectors are unsupported")
             blocks.append(real+1j*imag)
         value=np.concatenate(blocks).reshape(auxcell.nao_nr(),cell.nao_nr(),cell.nao_nr())
@@ -126,7 +197,12 @@ def build_representative_archive(cell,kpts,auxbasis,output,work,*,corrected=Fals
                           finite_size_kind="ewald" if corrected else "none",stored_x=stored_x,
                           producer_revision=producer_revision,chunk_size=chunk_size,
                           source_mode="representatives",reference_get_factor=reference_get_factor)
-    summary.update(representative_only_build=True,three_center_pairs=builder.three_center_pairs,
+    summary.update(representative_only_build=True,three_center_pairs=len(orbits.representatives),
+                   ordinary_three_center_pairs=builder.three_center_pairs,
+                   df_backend=backend,builder_class=type(builder).__name__,
+                   corrected_three_center_pairs=len(diagonal) if corrected else 0,
+                   corrected_build_seconds=corrected_seconds,
+                   corrected_producer="green_igen.df._make_j3c" if corrected else None,
                    build_seconds=build_seconds,metric_seconds=builder.metric_seconds,
                    export_seconds=time.perf_counter()-export_started,
                    temporary_file_bytes=sum(file.stat().st_size for file in work.glob("*.h5")),

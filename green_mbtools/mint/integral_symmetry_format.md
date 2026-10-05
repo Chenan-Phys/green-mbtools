@@ -5,6 +5,16 @@ An SG directory has `meta.h5` and `SGVQ_<representative_start>.h5`; it has no
 legacy `chunk_size` dataset, `VQ_*` files, or legacy version alias. Both old
 readers must reject it. Input legacy k/q/pair metadata retains its meaning.
 
+Coordinated minimum consumers on `Chenan-Phys` feature branches:
+`green-symmetry` at `82b5c67a5c2f6d53dd0fbf80178eb1a234879041`,
+`green-mbpt` at `f480f4ec7bb5ed601f678aed9c8a45903afa5701`, and
+`green-gpu` at `0110ef3037e4fd92f58a3d2fdba9f876549b38c9` (or its documentation
+successor). This feature is opt-in and is not merged upstream. Use all coordinated
+consumer revisions before producing SG files for a solver run. Full-rank metrics
+alone are insufficient: actual factors must satisfy the preserving group's
+covariance at the configured finite-grid tolerances; a failed stabilizer rejects
+representative production.
+
 The initial domain is scalar, spherical, three-dimensional ordinary/Ewald
 Coulomb, with square orbital basis changes and captured full positive lower
 Cholesky factors. Spinors, negative or truncated metric sectors, and rectangular
@@ -90,6 +100,11 @@ Producer opt-in uses `--integral_symmetry space_group` and a fresh
 `--integral_symmetry_work DIRECTORY`, alongside fresh input/HF/correlation paths.
 The complete SCF CDERI remains separate. The representative CCGDF producer
 captures all needed q metrics but requests only representative three-center pairs.
+The default corrected q=0 blocks come from `green_igen.df._make_j3c`, restricted
+to diagonal representatives. Its actual Cholesky solve is captured through a
+scoped module proxy; class hooks and module ownership are restored on failure.
+Nonzero-q representatives come from the ordinary builder. A PySCF builder's
+`exx="ewald"` setting is not interchangeable with this legacy GREEN contract.
 Reduced-q GW metadata is written in the actual correlation gauge and identified
 by `integral_symmetry/correlation_gauge_id`. Existing stars and weights are kept.
 Offline `examples/compress_df_integrals.py` streams a complete captured-frame

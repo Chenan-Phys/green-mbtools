@@ -24,15 +24,11 @@ from green_mbtools.mint.integral_symmetry_transform import (
     validate_overlap_covariance,
 )
 from green_mbtools.mint.symmetry_utils import get_representation
+from green_mbtools.mint.integral_symmetry_builder import build_captured_legacy_ewald
 
 
 class CapturingCCGDFBuilder(_CCGDFBuilder):
     """Capture actual factors, including the builder's imposed q/-q relation."""
-    corrected = False
-
-    def weighted_coulG(self, kpt, exx, mesh, omega=None):
-        return super().weighted_coulG(kpt, "ewald" if self.corrected else exx, mesh, omega)
-
     def gen_uniq_kpts_groups(self, *args, **kwargs):
         for q, pairs, decomposition in super().gen_uniq_kpts_groups(*args, **kwargs):
             factor, negative, tag = decomposition
@@ -62,6 +58,9 @@ def main():
     parser.add_argument("--rtol", type=float, default=1e-8)
     parser.add_argument("--aux-tight", action="store_true", help="Use a more localized full-rank auxiliary fixture")
     parser.add_argument("--ewald", action="store_true", help="Build a separately captured Ewald-corrected gauge")
+    parser.add_argument("--system",choices=["carbon","silicon"],default="carbon")
+    parser.add_argument("--supercell",type=int,default=1,help="Bounded repetition along the first lattice vector")
+    parser.add_argument("--shift",type=float,nargs=3,default=[0.,0.,0.])
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=False)
@@ -70,6 +69,14 @@ def main():
     cell.atom = [["C", [0, 0, 0]], ["C", [0.875, 0.875, 0.875]]]
     cell.unit = "Angstrom"
     cell.basis = {"C": [[0, [1.0, 1.0]], [1, [0.6, 1.0]]]}
+    if args.system=="silicon":
+        cell.a*=5.431/3.5
+        cell.atom=[["Si",[0,0,0]],["Si",[1.35775]*3]]
+        cell.basis="gth-dzvp-molopt-sr";cell.pseudo="gth-pbe"
+    if not 1<=args.supercell<=2:raise ValueError("Fixture supercell is bounded to two repetitions")
+    if args.supercell==2:
+        cell.atom=list(cell.atom)+[[symbol,(np.asarray(position)+cell.a[0]).tolist()] for symbol,position in cell.atom]
+        cell.a[0]*=2
     cell.precision = 1e-10
     cell.verbose = 4
     cell.mesh = [args.mesh] * 3
@@ -77,36 +84,41 @@ def main():
     cell.space_group_symmetry = True
     cell.symmorphic = False
     cell.build()
-    kpts = cell.make_kpts(args.nk)
+    kpts = cell.make_kpts(args.nk)+cell.get_abs_kpts(np.asarray(args.shift))
     kstruct = integral_kstruct(cell, kpts)
     mesh = IntegerMesh.from_scaled(cell.get_scaled_kpts(kpts))
     operations = validated_cell_operations(cell, kstruct)
     orbits = build_pair_orbits(mesh, operations, time_reversal=True, exchange=True)
     auxiliary_basis = ({"C": [[0, [2.0, 1.0]], [1, [1.2, 1.0]]]} if args.aux_tight else
                        {"C": [[0, [0.8, 1.0]], [0, [0.25, 1.0]], [1, [0.6, 1.0]]]})
+    if args.system=="silicon":auxiliary_basis={"Si":auxiliary_basis["C"]}
     # CCGDF's compensation/fuse contract requires normalized multipole charges.
     # An ordinary incore.make_auxcell gives inconsistent compensated metrics.
     auxcell = gdf.make_modrho_basis(cell, auxiliary_basis)
     builder = CapturingCCGDFBuilder(cell, auxcell, kpts)
-    builder.corrected = args.ewald
     builder.mesh = np.array(cell.mesh)
     builder.j2c_eig_always = False
     builder.captured = []
     pairs = np.array([(ki, kj) for ki in kpts for kj in kpts])
     started = time.perf_counter()
     builder.make_j3c(str(out / "cderi.h5"), kptij_lst=pairs)
-    build_seconds = time.perf_counter() - started
     provider = df.GDF(cell, kpts)
     provider.auxcell = auxcell
     provider._cderi = str(out / "cderi.h5")
     nk, nao = len(kpts), cell.nao_nr()
+    corrected_provider = q0_gauge = None
+    if args.ewald:
+        corrected_provider, q0_gauge = build_captured_legacy_ewald(
+            cell, kpts, auxiliary_basis, [(i, i) for i in range(nk)],
+            out / "legacy-ewald-cderi.h5", cell.mesh)
+    build_seconds = time.perf_counter() - started
     factors = {}
     gauges = {}
     pair_q = {}
     qpts = []
     for iq, (q, group_pairs, c) in enumerate(builder.captured):
         qpts.append(q)
-        gauges[iq] = CholeskyGauge(c, f"captured-ccgdf-q{iq}",
+        gauges[iq] = q0_gauge if args.ewald and np.linalg.norm(q) < 1e-9 else CholeskyGauge(c, f"captured-ccgdf-q{iq}",
                                   "ewald-Coulomb" if args.ewald else "ordinary-Coulomb")
         for pair in group_pairs:
             pair_q[divmod(int(pair), nk)] = iq
@@ -115,7 +127,8 @@ def main():
     for i in range(nk):
         for j in range(nk):
             blocks = []
-            for real, imag, sign in provider.sr_loop((kpts[i], kpts[j]), compact=False):
+            reader = corrected_provider if args.ewald and i == j else provider
+            for real, imag, sign in reader.sr_loop((kpts[i], kpts[j]), compact=False):
                 if sign != 1:
                     raise ValueError("Negative-metric sectors are unsupported")
                 blocks.append(real + 1j * imag)
@@ -131,6 +144,7 @@ def main():
     with h5py.File(out / "complete-reference.h5", "w") as archive:
         archive.attrs["kernel_id"] = "ewald-Coulomb" if args.ewald else "ordinary-Coulomb"
         archive.attrs["set_kind"] = "correlation" if args.ewald else "hf"
+        archive.attrs["corrected_producer"] = "green_igen.df._make_j3c" if args.ewald else "none"
         archive["Cell"] = cell.dumps()
         archive["AuxCell"] = auxcell.dumps()
         archive["kpts"] = kpts
@@ -175,7 +189,7 @@ def main():
     summary = orbits.summary()
     summary.update(build_seconds=build_seconds, nao=nao, naux=auxcell.nao_nr(), plane_wave_mesh=args.mesh,
                    kernel_id="ewald-Coulomb" if args.ewald else "ordinary-Coulomb",
-                   physical_fixture="minimal p-orbital carbon diamond", backend="CCGDF",
+                   physical_fixture=f"{args.system} diamond; supercell={args.supercell}", backend="CCGDF",
                    maximum=maximum, all_pairs_pass=all(r["pass_entries"] for r in results),
                    results=results, atol=args.atol, rtol=args.rtol,
                    status="PASS" if all(r["pass_entries"] for r in results) else "FAIL")
