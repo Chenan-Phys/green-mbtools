@@ -571,6 +571,12 @@ def add_pbc_params(parser):
                         help="Fresh directory for representative builder scratch and captured gauges")
     parser.add_argument("--a", type=parse_geometry, help="lattice geometry", required=True)
     parser.add_argument("--nk", type=int, nargs='+', help="number of k-points in each direction. Provide 1 value for symmetric mesh or 3 values for anisotropic mesh.", required=True)
+    parser.add_argument(
+        "--df_backend", choices=["ccgdf", "rsgdf"], default="ccgdf",
+        help=("Periodic Gaussian density-fitting backend. 'ccgdf' preserves "
+              "the existing GREEN behavior and is the default. 'rsgdf' "
+              "explicitly enables PySCF range-separated GDF."),
+    )
     parser.add_argument("--pseudo", type=str, nargs="*", default=[None], help="pseudopotential")
     parser.add_argument("--shift", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="mesh shift")
     parser.add_argument("--center", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="mesh center")
@@ -1207,6 +1213,17 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
             continue
         # Build transformation operator in the aux-AO basis connecting "ik" with "irre_k"
         mat_ao = get_representation(ik, iop, auxcell, qstruct)
+        if "j2c/metric_factors" in j2c_data:
+            # RSGDF frames come from the actual builder, including its absolute
+            # rank cutoff and conjugation. Retain CCGDF's existing metadata path.
+            target = j2c_data[f"j2c/metric_factors/{ik}"][()]
+            source = j2c_data[f"j2c/metric_factors/{irre_q_bz}"][()]
+            if qstruct.time_reversal_symm_bz[ik]:
+                target = target.conj()
+            nrows, ncols = target.shape[0], source.shape[0]
+            kspace_orep_p0[ik, :nrows, :ncols] = target @ mat_ao @ np.linalg.pinv(source)
+            kspace_orep_j2c[ik] = mat_ao
+            continue
         # obtain J^{1/2} (q_IBZ) from pre-computed list
         j2c_irre_k_sqrt = j2c_sqrt_irre[irre_q]
         # compute J^{-1/2} (k_BZ) on the fly from q_irreducible
@@ -1406,8 +1423,7 @@ def construct_mol_gdf(args, mycell):
 
 def construct_gdf(args, mycell, kmesh=None):
     '''
-    Construct Gaussian Density Fitting obejct for a given parameters and unit cell.
-    We make sure to disable range-separeting implementation
+    Construct periodic GDF with an explicitly selected backend (default CCGDF).
     '''
     # Use gaussian density fitting to get fitted densities
     mydf = int_utils.GreenGDF(mycell)
@@ -1415,8 +1431,27 @@ def construct_gdf(args, mycell, kmesh=None):
     mydf.tr_symm = bool(getattr(args, "tr_symm", False))
     mydf.x2c = int(getattr(args, "x2c", 0))
     mydf.use_j2c_eig_decomposition = bool(getattr(args, "use_j2c_eig_decomposition", True))
-    if hasattr(mydf, "_prefer_ccdf"):
-        mydf._prefer_ccdf = True  # Disable RS-GDF switch for new pyscf versions 
+    backend = getattr(args, "df_backend", "ccgdf")
+    if backend not in {"ccgdf", "rsgdf"}:
+        raise ValueError(f"Unsupported DF backend: {backend!r}")
+    if not hasattr(mydf, "_prefer_ccdf"):
+        raise RuntimeError("This PySCF/GreenGDF version needs a backend adapter")
+    if backend == "rsgdf" and mycell.omega > 0:
+        raise NotImplementedError(
+            "Explicit RSGDF is not supported for a long-range-only Coulomb operator"
+        )
+    if backend == "rsgdf":
+        modes = getattr(args, "finite_size_kind", "ewald")
+        modes = [modes] if isinstance(modes, str) else list(modes)
+        unsupported = set(modes) - {"ewald"}
+        if unsupported:
+            raise NotImplementedError(
+                "RSGDF finite-size modes are not validated: "
+                + ", ".join(sorted(unsupported))
+                + ". Use ccgdf for these correction routes."
+            )
+    mydf._prefer_ccdf = backend == "ccgdf"
+    logging.info("Requested periodic DF backend: %s", backend)
     if args.auxbasis is not None:
         mydf.auxbasis = args.auxbasis
     elif args.beta is not None:
@@ -1467,6 +1502,8 @@ def compute_df_int_dca(args, mycell, kmesh, lattice_kmesh, nao, X_k):
 
     if not bool(args.df_int):
         return
+    if getattr(args, "df_backend", "ccgdf") == "rsgdf":
+        raise NotImplementedError("RSGDF coarse-grained finite-size correction is not validated; use ccgdf")
     mydf = construct_gdf(args, mycell, kmesh)
     # Use Ewald for divergence treatment
     mydf.exxdiv = 'ewald'

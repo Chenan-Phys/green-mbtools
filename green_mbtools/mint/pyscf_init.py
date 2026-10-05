@@ -276,25 +276,10 @@ class pyscf_pbc_init (pyscf_init):
         # These are written to cderi_ewald.h5 and later substituted for the
         # diagonal entries in the correlated integral set.
         #
-        # The Ewald kernel is installed by monkey-patching gdf.GDF.weighted_coulG
-        # on the class (not the instance) because green_igen._make_j3c resolves
-        # the method through the class hierarchy.  The original method is saved
-        # before the patch and unconditionally restored afterwards so that no
-        # subsequent GDF construction in this session is affected.
-        from pyscf.pbc import df as gdf
-        import green_igen.df as gggdf
-
+        # The legacy producer copies a class hook onto its own GDF class.
+        # Restore both class dictionaries, including on exceptions.
         mydf = comm.construct_gdf(self.args, self.cell, self.kmesh)
-        mydf.exxdiv = 'ewald'
-        auxcell = gggdf.make_modrho_basis(mydf.cell, mydf.auxbasis,
-                                          mydf.exp_to_discard)
-        kptij_lst = np.asarray([(ki, ki) for ki in self.kmesh])
-
-        # Save → patch → build → restore.
-        weighted_coulG_old = gdf.GDF.weighted_coulG
-        gdf.GDF.weighted_coulG = int_utils.weighted_coulG_ewald
-        gggdf._make_j3c(mydf, self.cell, auxcell, kptij_lst, "cderi_ewald.h5")
-        gdf.GDF.weighted_coulG = weighted_coulG_old  # always restore
+        int_utils.build_legacy_ewald(mydf, self.cell, self.kmesh, "cderi_ewald.h5")
 
         # Build correlated integrals; diagonal pairs come from cderi_ewald.h5.
         int_utils.compute_integrals(self.args, self.cell, mydf, self.kmesh, nao, X_k, self.args.int_path, "cderi.h5", True, self.args.keep_cderi, cderi_name2="cderi_ewald.h5")
