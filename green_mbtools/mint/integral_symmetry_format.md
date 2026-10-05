@@ -5,6 +5,16 @@ An SG directory has `meta.h5` and `SGVQ_<representative_start>.h5`; it has no
 legacy `chunk_size` dataset, `VQ_*` files, or legacy version alias. Both old
 readers must reject it. Input legacy k/q/pair metadata retains its meaning.
 
+Coordinated minimum consumers on `Chenan-Phys` feature branches:
+`green-symmetry` at `82b5c67a5c2f6d53dd0fbf80178eb1a234879041`,
+`green-mbpt` at `f480f4ec7bb5ed601f678aed9c8a45903afa5701`, and
+`green-gpu` at `0110ef3037e4fd92f58a3d2fdba9f876549b38c9` (or its documentation
+successor). This feature is opt-in and is not merged upstream. Use all coordinated
+consumer revisions before producing SG files for a solver run. Full-rank metrics
+alone are insufficient: actual factors must satisfy the preserving group's
+covariance at the configured finite-grid tolerances; a failed stabilizer rejects
+representative production.
+
 The initial domain is scalar, spherical, three-dimensional ordinary/Ewald
 Coulomb, with square orbital basis changes and captured full positive lower
 Cholesky factors. Spinors, negative or truncated metric sectors, and rectangular

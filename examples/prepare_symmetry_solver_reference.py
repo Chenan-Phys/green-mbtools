@@ -46,6 +46,7 @@ def main():
     p.add_argument("--correlation",required=True)
     p.add_argument("--out",required=True)
     p.add_argument("--revision",required=True)
+    p.add_argument("--hf-only",action="store_true",help="Prepare a bounded HF-only solver fixture")
     args=p.parse_args()
     output=Path(args.out).resolve()
     output.mkdir(parents=True,exist_ok=False)
@@ -96,6 +97,7 @@ def main():
     results={"mean_field_converged":bool(mean_field.converged),"mean_field_energy":float(mean_field.e_tot),
              "one_body_symmetry":"unreduced", "legacy_representatives":len(legacy_pairs)}
     for name,reference in (("hf",hf_path),("correlation",correlation_path)):
+        if args.hf_only and name=="correlation":continue
         c,a,k,q,pq,gg,v=load_reference(reference)
         if input_fingerprint(c,k)!=fingerprint:
             raise ValueError("HF/correlation input identities disagree")

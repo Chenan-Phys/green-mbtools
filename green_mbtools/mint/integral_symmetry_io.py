@@ -115,7 +115,7 @@ def write_archive(geometry, get_factor, output, *, set_kind, finite_size_kind,
             source = np.asarray(get_factor(*pair),dtype=complex)
             if source.shape != (naux,nao,nao) or not np.all(np.isfinite(source)):
                 raise ValueError("Malformed representative source")
-            for operation in o.operations:
+            for operation_id,operation in enumerate(o.operations):
                 for tr in (False,True):
                     points,_ = o.mesh.action(operation,tr)
                     target = tuple(map(int,points[list(pair)]))
@@ -125,8 +125,12 @@ def write_archive(geometry, get_factor, output, *, set_kind, finite_size_kind,
                         _,maps = geometry.spatial(pair,operation,tr=tr,exchange=exchange)
                         kw = {} if stored_x is None else {"source_x_inverse":(x_inverse[pair[0]],x_inverse[pair[1]]),
                                                          "target_x":(stored_x[pair[0]],stored_x[pair[1]])}
-                        if not np.allclose(geometry.reconstruct(source,maps,**kw),source,atol=atol,rtol=rtol):
-                            raise ValueError(f"Representative stabilizer covariance failed for {pair}")
+                        transformed=geometry.reconstruct(source,maps,**kw)
+                        if not np.allclose(transformed,source,atol=atol,rtol=rtol):
+                            error=float(np.max(np.abs(transformed-source)))
+                            raise ValueError(f"Representative stabilizer covariance failed for {pair}: "
+                                             f"operation={operation_id}, TR={tr}, exchange={exchange}, "
+                                             f"max_absolute={error:.12g}")
     # Validate before writing any directory, and bound reference residency to
     # one representative and one requested factor at a time.
     reference_get_factor = reference_get_factor or (get_factor if source_mode == "complete" else None)
