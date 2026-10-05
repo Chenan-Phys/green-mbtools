@@ -238,6 +238,22 @@ def build_pair_orbits(mesh, operations, *, time_reversal=False, exchange=False):
                       tr_map, ex_map, pair_wraps, np.array(sizes, dtype=np.int64))
 
 
+def integral_kstruct(cell, kpts):
+    """Full mathematical crystal group, independent of one-body/FFT filtering.
+
+    PySCF defaults to symmorphic operations and can additionally discard
+    translations incompatible with its density FFT grid. Those are separate
+    from integral-pair symmetry. Numerical covariance is validated before use.
+    The supplied cell and its one-body symmetry objects are never modified.
+    """
+    from pyscf.pbc.lib import kpts as libkpts
+    analysis_cell = cell.copy()
+    analysis_cell.lattice_symmetry = None
+    return libkpts.make_kpts(analysis_cell, kpts, space_group_symmetry=True,
+                             time_reversal_symmetry=False, symmorphic=False,
+                             check_mesh_symmetry=False)
+
+
 def validated_cell_operations(cell, kstruct, tolerance=1e-6):
     """Retain actual PySCF operations after species/basis/pseudopotential checks.
 

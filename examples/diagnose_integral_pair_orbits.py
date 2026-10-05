@@ -13,7 +13,7 @@ from pyscf.pbc import gto
 from pyscf.pbc.lib import kpts as libkpts
 
 from green_mbtools.mint.integral_symmetry import (
-    IntegerMesh, build_pair_orbits, validated_cell_operations,
+    IntegerMesh, build_pair_orbits, validated_cell_operations, integral_kstruct,
 )
 
 
@@ -33,7 +33,7 @@ def main():
         legacy_representatives = len(source["symmetry/pairs/kpair_irre_list"])
         if int(source["params/nao"][()]) != int(source["params/nso"][()]):
             raise ValueError("SG diagnostics initially require scalar orbitals")
-    kstruct = libkpts.make_kpts(cell, actual_k, space_group_symmetry=True, time_reversal_symmetry=False)
+    kstruct = integral_kstruct(cell, actual_k)
     operations = validated_cell_operations(cell, kstruct)
     orbits = build_pair_orbits(IntegerMesh.from_scaled(scaled), operations,
                               time_reversal=args.time_reversal, exchange=args.exchange)
