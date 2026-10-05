@@ -567,6 +567,12 @@ def add_pbc_params(parser):
     '''
     parser.add_argument("--a", type=parse_geometry, help="lattice geometry", required=True)
     parser.add_argument("--nk", type=int, nargs='+', help="number of k-points in each direction. Provide 1 value for symmetric mesh or 3 values for anisotropic mesh.", required=True)
+    parser.add_argument(
+        "--df_backend", choices=["ccgdf", "rsgdf"], default="ccgdf",
+        help=("Periodic Gaussian density-fitting backend. 'ccgdf' preserves "
+              "the existing GREEN behavior and is the default. 'rsgdf' "
+              "explicitly enables PySCF range-separated GDF."),
+    )
     parser.add_argument("--pseudo", type=str, nargs="*", default=[None], help="pseudopotential")
     parser.add_argument("--shift", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="mesh shift")
     parser.add_argument("--center", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="mesh center")
@@ -1402,8 +1408,7 @@ def construct_mol_gdf(args, mycell):
 
 def construct_gdf(args, mycell, kmesh=None):
     '''
-    Construct Gaussian Density Fitting obejct for a given parameters and unit cell.
-    We make sure to disable range-separeting implementation
+    Construct periodic GDF with an explicitly selected backend (default CCGDF).
     '''
     # Use gaussian density fitting to get fitted densities
     mydf = int_utils.GreenGDF(mycell)
@@ -1411,8 +1416,17 @@ def construct_gdf(args, mycell, kmesh=None):
     mydf.tr_symm = bool(getattr(args, "tr_symm", False))
     mydf.x2c = int(getattr(args, "x2c", 0))
     mydf.use_j2c_eig_decomposition = bool(getattr(args, "use_j2c_eig_decomposition", True))
-    if hasattr(mydf, "_prefer_ccdf"):
-        mydf._prefer_ccdf = True  # Disable RS-GDF switch for new pyscf versions 
+    backend = getattr(args, "df_backend", "ccgdf")
+    if backend not in {"ccgdf", "rsgdf"}:
+        raise ValueError(f"Unsupported DF backend: {backend!r}")
+    if not hasattr(mydf, "_prefer_ccdf"):
+        raise RuntimeError("This PySCF/GreenGDF version needs a backend adapter")
+    if backend == "rsgdf" and mycell.omega > 0:
+        raise NotImplementedError(
+            "Explicit RSGDF is not supported for a long-range-only Coulomb operator"
+        )
+    mydf._prefer_ccdf = backend == "ccgdf"
+    logging.info("Requested periodic DF backend: %s", backend)
     if args.auxbasis is not None:
         mydf.auxbasis = args.auxbasis
     elif args.beta is not None:

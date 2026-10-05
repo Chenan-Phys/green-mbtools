@@ -630,6 +630,8 @@ class GreenGDF(df.GDF):
             dfbuilder.eta = self.eta
         else:
             dfbuilder = _RSGDFBuilder(cell, auxcell, kpts_union)
+        self._green_df_builder_name = dfbuilder.__class__.__name__
+        log.info("GREEN periodic DF builder: %s", self._green_df_builder_name)
         # Keep configurable to support both legacy-reference compatibility and systematic eigenvalue workflow.
         dfbuilder.j2c_eig_always = bool(getattr(self, 'use_j2c_eig_decomposition', True))
         dfbuilder.mesh = self.mesh
