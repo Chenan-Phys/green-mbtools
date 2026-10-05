@@ -53,6 +53,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--mesh", type=int, default=31, help="Finite PW grid for this convergence experiment")
+    parser.add_argument("--precision",type=float,default=1e-10,help="Real-space integral cutoff for the fixture")
     parser.add_argument("--nk", type=int, nargs=3, default=(3, 1, 1))
     parser.add_argument("--atol", type=float, default=1e-8)
     parser.add_argument("--rtol", type=float, default=1e-8)
@@ -77,7 +78,7 @@ def main():
     if args.supercell==2:
         cell.atom=list(cell.atom)+[[symbol,(np.asarray(position)+cell.a[0]).tolist()] for symbol,position in cell.atom]
         cell.a[0]*=2
-    cell.precision = 1e-10
+    cell.precision = args.precision
     cell.verbose = 4
     cell.mesh = [args.mesh] * 3
     cell.max_memory = 4000
