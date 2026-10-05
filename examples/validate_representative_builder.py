@@ -22,8 +22,16 @@ def main():
     summary=build_representative_archive(cell,kpts,aux._basis,args.out,args.work,corrected=corrected,
                                          producer_revision=args.revision,chunk_size=5,
                                          reference_get_factor=lambda i,j:factors[i,j],mesh=cell.mesh)
-    with h5py.File(Path(args.work)/"representatives-cderi.h5") as file:
-        assert len(file["j3c"])==summary["representatives"]
+    ordinary_count=corrected_count=0
+    ordinary=Path(args.work)/"representatives-cderi.h5"
+    if ordinary.exists():
+        with h5py.File(ordinary) as file:ordinary_count=len(file["j3c"])
+    corrected_file=Path(args.work)/"legacy-ewald-cderi.h5"
+    if corrected_file.exists():
+        with h5py.File(corrected_file) as file:corrected_count=len(file["j3c"])
+    assert ordinary_count==summary["ordinary_three_center_pairs"]
+    assert corrected_count==summary["corrected_three_center_pairs"]
+    assert ordinary_count+corrected_count==summary["representatives"]
     maximum={"max_absolute":0.}
     with ArchiveReader(args.out) as reader:
         for i in range(len(kpts)):

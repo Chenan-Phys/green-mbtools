@@ -90,6 +90,11 @@ Producer opt-in uses `--integral_symmetry space_group` and a fresh
 `--integral_symmetry_work DIRECTORY`, alongside fresh input/HF/correlation paths.
 The complete SCF CDERI remains separate. The representative CCGDF producer
 captures all needed q metrics but requests only representative three-center pairs.
+The default corrected q=0 blocks come from `green_igen.df._make_j3c`, restricted
+to diagonal representatives. Its actual Cholesky solve is captured through a
+scoped module proxy; class hooks and module ownership are restored on failure.
+Nonzero-q representatives come from the ordinary builder. A PySCF builder's
+`exx="ewald"` setting is not interchangeable with this legacy GREEN contract.
 Reduced-q GW metadata is written in the actual correlation gauge and identified
 by `integral_symmetry/correlation_gauge_id`. Existing stars and weights are kept.
 Offline `examples/compress_df_integrals.py` streams a complete captured-frame
