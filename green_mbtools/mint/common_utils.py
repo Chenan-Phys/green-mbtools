@@ -1209,6 +1209,17 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
             continue
         # Build transformation operator in the aux-AO basis connecting "ik" with "irre_k"
         mat_ao = get_representation(ik, iop, auxcell, qstruct)
+        if "j2c/metric_factors" in j2c_data:
+            # RSGDF frames come from the actual builder, including its absolute
+            # rank cutoff and conjugation. Retain CCGDF's existing metadata path.
+            target = j2c_data[f"j2c/metric_factors/{ik}"][()]
+            source = j2c_data[f"j2c/metric_factors/{irre_q_bz}"][()]
+            if qstruct.time_reversal_symm_bz[ik]:
+                target = target.conj()
+            nrows, ncols = target.shape[0], source.shape[0]
+            kspace_orep_p0[ik, :nrows, :ncols] = target @ mat_ao @ np.linalg.pinv(source)
+            kspace_orep_j2c[ik] = mat_ao
+            continue
         # obtain J^{1/2} (q_IBZ) from pre-computed list
         j2c_irre_k_sqrt = j2c_sqrt_irre[irre_q]
         # compute J^{-1/2} (k_BZ) on the fly from q_irreducible
@@ -1425,6 +1436,16 @@ def construct_gdf(args, mycell, kmesh=None):
         raise NotImplementedError(
             "Explicit RSGDF is not supported for a long-range-only Coulomb operator"
         )
+    if backend == "rsgdf":
+        modes = getattr(args, "finite_size_kind", "ewald")
+        modes = [modes] if isinstance(modes, str) else list(modes)
+        unsupported = set(modes) - {"ewald"}
+        if unsupported:
+            raise NotImplementedError(
+                "RSGDF finite-size modes are not validated: "
+                + ", ".join(sorted(unsupported))
+                + ". Use ccgdf for these correction routes."
+            )
     mydf._prefer_ccdf = backend == "ccgdf"
     logging.info("Requested periodic DF backend: %s", backend)
     if args.auxbasis is not None:
@@ -1477,6 +1498,8 @@ def compute_df_int_dca(args, mycell, kmesh, lattice_kmesh, nao, X_k):
 
     if not bool(args.df_int):
         return
+    if getattr(args, "df_backend", "ccgdf") == "rsgdf":
+        raise NotImplementedError("RSGDF coarse-grained finite-size correction is not validated; use ccgdf")
     mydf = construct_gdf(args, mycell, kmesh)
     # Use Ewald for divergence treatment
     mydf.exxdiv = 'ewald'

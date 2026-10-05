@@ -4,6 +4,8 @@ import random
 import string
 import warnings
 import importlib.metadata as imd
+from contextlib import contextmanager
+from threading import RLock
 
 import h5py
 import numpy as np
@@ -198,6 +200,49 @@ def weighted_coulG_ewald(mydf, kpt, exx, mesh, omega=None):
     if omega is None:
         return df.aft.weighted_coulG(mydf, kpt, "ewald", mesh)
     return df.aft.weighted_coulG(mydf, kpt, "ewald", mesh, omega)
+
+
+_ewald_hook_lock = RLock()
+_missing_attribute = object()
+
+
+@contextmanager
+def legacy_ewald_coulomb():
+    """Scope the legacy producer's two class hooks, including inherited ownership.
+
+    green_igen copies GDF.weighted_coulG onto its own GDF class. Both copies
+    must be restored in the same process. Nested use in one thread is supported;
+    concurrent legacy correction contexts are rejected. Do not run unrelated
+    legacy GDF builds concurrently with this class-global compatibility adapter.
+    """
+    import green_igen.df as legacy
+    classes = (df.GDF, legacy.GDF)
+    if not _ewald_hook_lock.acquire(blocking=False):
+        raise RuntimeError("Concurrent legacy Ewald hook contexts are unsupported")
+    saved = [(cls, cls.__dict__.get("weighted_coulG", _missing_attribute))
+             for cls in classes]
+    try:
+        df.GDF.weighted_coulG = weighted_coulG_ewald
+        yield
+    finally:
+        for cls, original in reversed(saved):
+            if original is _missing_attribute:
+                if "weighted_coulG" in cls.__dict__:
+                    delattr(cls, "weighted_coulG")
+            else:
+                cls.weighted_coulG = original
+        _ewald_hook_lock.release()
+
+
+def build_legacy_ewald(mydf, cell, kmesh, cderi_file):
+    """Retain GREEN's corrected q=0 producer without leaking its Coulomb hook."""
+    import green_igen.df as legacy
+    logging.info("GREEN corrected DF producer: green_igen.df._make_j3c (legacy Ewald)")
+    mydf.exxdiv = "ewald"
+    auxcell = legacy.make_modrho_basis(cell, mydf.auxbasis, mydf.exp_to_discard)
+    pairs = np.asarray([(ki, ki) for ki in kmesh])
+    with legacy_ewald_coulomb():
+        legacy._make_j3c(mydf, cell, auxcell, pairs, cderi_file)
 
 # a = lattice vectors / (2*pi)
 @jit(nopython=True)
@@ -462,6 +507,8 @@ def weighted_coulG_ewald_2nd(mydf, kpt, exx, mesh):
     return coulG
 
 def compute_ewald_correction(args, maindf, kmesh, nao, filename = "df_ewald.h5", X_k=None):
+    if getattr(args, "df_backend", "ccgdf") == "rsgdf":
+        raise NotImplementedError("RSGDF GF2 finite-size sidecars are not validated; use ccgdf")
     # global full_k_mesh
     data = h5py.File(filename, "w")
     EW     = data.create_group("EW")
@@ -586,6 +633,25 @@ def compute_ewald_correction(args, maindf, kmesh, nao, filename = "df_ewald.h5",
     print("Ewald correction has been computed and stored into {}".format(filename))
 
 
+class _GreenRSGDFBuilder(_RSGDFBuilder):
+    """Keep the exact whitening frames used for ordinary CDERI construction."""
+
+    def gen_uniq_kpts_groups(self, *args, **kwargs):
+        self.green_metric_factors = []
+        for q, pairs, decomposition in super().gen_uniq_kpts_groups(*args, **kwargs):
+            factor, negative, tag = decomposition
+            if negative is not None:
+                raise NotImplementedError("RSGDF negative auxiliary metrics are not validated")
+            if tag == "CD":
+                whitener = LA.solve_triangular(factor, np.eye(len(factor)), lower=True)
+            elif tag == "ED":
+                whitener = np.asarray(factor)
+            else:
+                raise RuntimeError("Unsupported PySCF metric factorization: " + str(tag))
+            self.green_metric_factors.append((np.array(q), np.array(whitener)))
+            yield q, pairs, decomposition
+
+
 class GreenGDF(df.GDF):
     def __init__(self, cell, kpts=np.zeros((1,3))):
         super().__init__(cell, kpts)
@@ -629,8 +695,8 @@ class GreenGDF(df.GDF):
             dfbuilder = _CCGDFBuilder(cell, auxcell, kpts_union)
             dfbuilder.eta = self.eta
         else:
-            dfbuilder = _RSGDFBuilder(cell, auxcell, kpts_union)
-        self._green_df_builder_name = dfbuilder.__class__.__name__
+            dfbuilder = _GreenRSGDFBuilder(cell, auxcell, kpts_union)
+        self._green_df_builder_name = "_CCGDFBuilder" if self._prefer_ccdf or cell.omega > 0 else "_RSGDFBuilder"
         log.info("GREEN periodic DF builder: %s", self._green_df_builder_name)
         # Keep configurable to support both legacy-reference compatibility and systematic eigenvalue workflow.
         dfbuilder.j2c_eig_always = bool(getattr(self, 'use_j2c_eig_decomposition', True))
@@ -672,6 +738,19 @@ class GreenGDF(df.GDF):
         feri['j2c/q_ibz2bz'] = q_ibz2bz
         feri['j2c/q_bz2ibz'] = np.asarray(qstruct.bz2ibz, dtype=int)
         feri['j2c'].attrs['j2c_decomposition'] = 'eigenvalue' if dfbuilder.j2c_eig_always else 'cholesky'
+        if isinstance(dfbuilder, _GreenRSGDFBuilder):
+            # Include conjugate groups exactly as yielded by PySCF. Independently
+            # diagonalizing a transformed metric loses signs/degenerate rotations.
+            for iq, q in enumerate(uniq_qpts):
+                matches = []
+                for actual_q, factor in dfbuilder.green_metric_factors:
+                    delta = cell.get_scaled_kpts(actual_q - q)
+                    delta -= np.rint(delta)
+                    if np.linalg.norm(delta) < 1e-8:
+                        matches.append(factor)
+                if len(matches) != 1:
+                    raise RuntimeError("Missing or ambiguous RSGDF auxiliary frame at q=" + str(q))
+                feri[f'j2c/metric_factors/{iq}'] = matches[0]
         feri.close()
 
 
