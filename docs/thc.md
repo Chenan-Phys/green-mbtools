@@ -73,6 +73,9 @@ green-mbpt and green-gpu. Use explicit
 `--interaction_representation thc --thc_mode reconstruct|native`.
 Default DF behavior is preserved. Reconstruction supports CPU HF/GW/GF2 and
 GPU HF/GW or GPU-HF/CPU-GF2. Native HF/GW supports scalar full BZ and double
-precision. Native GF2, extrapolation/AqQ, point-space symmetry, production
-momentum FFT, direct real-space construction and all-electron adaptation are
-separate work. The scalar FFT algebra test is not a production solver.
+precision (`--P_sp false --Sigma_sp false`). Native GW also supports optional
+`--thc_gw_k_contraction fft` on a full closed regular mesh with a declared
+workspace budget. Momentum FFTs run on the host for both CPU and GPU consumers;
+GPU projection/screening/backprojection still run on CUDA. Native HF stays
+direct. Native GF2, extrapolation/AqQ, point-space symmetry, direct real-space
+construction and all-electron adaptation are separate work.
