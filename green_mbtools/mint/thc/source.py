@@ -122,7 +122,7 @@ class CanonicalReconstructionSource(LegacyDFSource):
     def metadata(self):
         return dict(super().metadata(),source_representation="space_group_df",
                     source_descriptor_sha256=fingerprint_file(self.directory/'meta.h5'),
-                    provider_attributes=dict(self.provider.attributes),
+                    provider_attributes={key:value.item() if isinstance(value,np.generic) else value for key,value in self.provider.attributes.items()},
                     fitting_objective="every full oriented pair; provider reconstructs each orbit contribution")
 
     def get_pair(self,ki,kj,aux_slice=None):

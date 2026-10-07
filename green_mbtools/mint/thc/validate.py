@@ -22,7 +22,9 @@ def validate_holdout(model, source, modulus=11, atol=1e-8, rtol=1e-6):
                        fits[a] @ fits[(a+1)%len(pairs)].conj().T) for a in range(len(pairs))]
         records[str(q)] = dict(factor=error(np.concatenate(refs), np.concatenate(fits)), cross_pair_gram=cross)
     return dict(accepted=bool(accepted), type="excluded orbital rows before full-data refit",
-                modulus=modulus, excluded_rows_per_pair=int(mask.sum()), transfers=records)
+                modulus=modulus, excluded_rows_per_pair=int(mask.sum()), transfers=records,
+                pair_reversal_constraints=model.metadata.get("pair_reversal_constraints",False),
+                independence="excluded observations; verified reversed/Hermitian partners may remain in training")
 
 
 def error(reference, candidate):
