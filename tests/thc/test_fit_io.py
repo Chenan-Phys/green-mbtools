@@ -106,3 +106,12 @@ def test_constraints_reject_unverified_original_Q_conjugacy(archive,monkeypatch)
     monkeypatch.setattr(archive.source,'get_pair',broken)
     with pytest.raises(ValueError,match='conjugacy'):
         fit_source(archive.source,archive.model.X,pair_reversal_constraints=True)
+
+
+def test_insufficient_separable_space_is_rejected_by_accuracy_gate(archive):
+    model,_=fit_source(archive.source,archive.model.X[:,:1])
+    validation=validate_source(model,archive.source,atol=1e-10,rtol=1e-10)
+    assert not validation['accepted']
+    assert max(row['worst_absolute'] for row in validation['transfers'].values())>1e-3
+    with pytest.raises(ValueError,match='acceptance'):
+        io.write(model,archive.root/'bad-rank',archive.input,archive.source,validation,{})
