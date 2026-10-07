@@ -70,7 +70,7 @@ def test_input_mismatch_incomplete_and_rejected_export(archive):
 
 
 def test_independent_rows_predict_and_corrupted_descriptor_is_rejected(archive):
-    fitted,_ = fit_source(archive.source,archive.model.X,holdout_modulus=4)
+    fitted,_ = fit_source(archive.source,archive.model.X,holdout_modulus=4,pair_reversal_constraints=True)
     assert validate_holdout(fitted,archive.source,modulus=4,atol=1e-10,rtol=1e-10)["accepted"]
     val=validate_source(fitted,archive.source,1e-10,1e-10)
     dest=archive.root/"maps"
@@ -95,3 +95,14 @@ def test_signed_gauge_and_correction_corruption_are_rejected(archive):
     with h5py.File(dest/"df_ewald.h5","r+") as f:f["probe"][0]=3.
     with pytest.raises(ValueError,match="correction"):
         io.read(dest)
+
+
+def test_constraints_reject_unverified_original_Q_conjugacy(archive,monkeypatch):
+    original=archive.source.get_pair
+    def broken(i,j,aux_slice=None):
+        value=original(i,j,aux_slice).copy()
+        if i==j:value[:,0,0]+=.01j
+        return value
+    monkeypatch.setattr(archive.source,'get_pair',broken)
+    with pytest.raises(ValueError,match='conjugacy'):
+        fit_source(archive.source,archive.model.X,pair_reversal_constraints=True)

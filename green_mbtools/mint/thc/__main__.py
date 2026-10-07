@@ -89,7 +89,8 @@ def main(argv=None):
     models, reports = {}, {}
     for kind, source in sources.items():
         started = time.perf_counter()
-        training, _ = fit_source(source, X, args.rcond, args.row_block, args.aux_block, holdout_modulus=11)
+        training, _ = fit_source(source, X, args.rcond, args.row_block, args.aux_block, holdout_modulus=11,pair_reversal_constraints=True,
+                                 covariance_atol=args.atol,covariance_rtol=args.rtol)
         holdout = validate_holdout(training, source, atol=args.atol, rtol=args.rtol)
         model, diagnostics = fit_source(source, X, args.rcond, args.row_block, args.aux_block)
         report = validate_source(model, source, args.atol, args.rtol)

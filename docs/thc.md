@@ -37,6 +37,11 @@ rank-revealing SVD. The acceptance gate checks every oriented factor, source-map
 covariance, and a preliminary fit excluding deterministic off-diagonal rows.
 Held-out cross-pair Grams are reported independently. This holdout is within a
 fixed geometry and mesh; it does not establish transfer to another system.
+The preliminary fit verifies original-Q pair reversal at the declared fit
+tolerances, constrains self-reversed q cores to the real frame, and jointly fits
+conjugate q cores. Reversed/Hermitian partner observations can remain in training;
+these are excluded-row covariance checks, not unconstrained out-of-sample physics.
+This avoids unidentifiable minimum-norm core directions when rows are withheld.
 Low rank failures refuse publication. Outputs are immutable and atomically
 published, with incomplete staging data retained for diagnosis.
 
