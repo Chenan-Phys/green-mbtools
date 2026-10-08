@@ -111,3 +111,13 @@ as evidence and are not exported. Rank reduction is conditional on those gates.
 along the first primitive lattice vector, with N in 1..4. Its default remains
 one primitive cell. This supports a physical basis-size series independently
 of a k-mesh series; all heavy preparation and fitting belongs on the workstation.
+
+If the implicit DF-residual Gram update loses positive semidefiniteness on
+nearly dependent points, selection restarts with two-pass modified Gram-Schmidt
+in the training feature space. This QR fallback stores selected feature vectors
+per q and uses blocked feature contractions; it does not materialize a grid
+Gram. It can require more preprocessing work/storage than the implicit method.
+Negative residual norms trigger a positive-norm recomputation rather than a
+wider numerical tolerance. Metadata records the backend and fallback reason.
+Held-out observations, pivot tolerance and export/physical error gates remain
+unchanged. Independent least-squares and degenerate-Gamma tests cover this path.

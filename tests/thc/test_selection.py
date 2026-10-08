@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from green_mbtools.mint.thc.selection import PairDensityGram, pivoted_cholesky, df_residual_points
+from green_mbtools.mint.thc.selection import PairDensityGram, pivoted_cholesky, df_residual_points, df_residual_points_qr
 from green_mbtools.mint.thc.collocation import stored_basis_values
 from green_mbtools.mint.thc.reference import project
 
@@ -80,14 +80,39 @@ def test_df_residual_shared_points_against_explicit_least_squares():
     points,diagnostics = df_residual_points(values,sources,6,np.linspace(.2,1.3,13))
     np.testing.assert_array_equal(points,expected)
     np.testing.assert_allclose(diagnostics['normalized_objective_history'],history,atol=2e-12)
+    qr_points,qr_diagnostics=df_residual_points_qr(values,sources,6,np.linspace(.2,1.3,13))
+    np.testing.assert_array_equal(qr_points,expected)
+    np.testing.assert_allclose(qr_diagnostics['normalized_objective_history'],history,atol=2e-12)
     held_points,held_diagnostics=df_residual_points(values,sources,6,holdout_modulus=3)
     for source in sources.values():
         for rhs in source.rhs.values():
             rhs[:,0,1]+=1e5+3e4j  # Row 1 is held out for n=3, modulus=3.
     np.testing.assert_array_equal(held_points,df_residual_points(values,sources,6,holdout_modulus=3)[0])
     assert held_diagnostics['excluded_target_rows_per_pair']>0
+    qr_held=df_residual_points_qr(values,sources,6,holdout_modulus=3)[0]
+    for source in sources.values():
+        for rhs in source.rhs.values():rhs[:,0,1]-=2e5+6e4j
+    np.testing.assert_array_equal(qr_held,df_residual_points_qr(values,sources,6,holdout_modulus=3)[0])
     with pytest.raises(ValueError,match="count"):
         df_residual_points(values,sources,14)
     sources['hf'].gauge_contract = None
     with pytest.raises(ValueError,match="audited"):
         df_residual_points(values,sources,4)
+
+
+def test_qr_residual_selection_stops_at_degenerate_gamma_feature_rank():
+    rng=np.random.default_rng(203)
+    values=rng.normal(size=(1,40,3))
+    class Source:
+        naux=2
+        pair_to_q=np.zeros((1,1),int)
+        gauge_contract=dict(verified_common_q_frame=True)
+        def iter_transfers(self):return [0]
+        def iter_pairs(self,q):return [(0,0)]
+        def get_pair(self,i,j):return rhs
+    rhs=rng.normal(size=(2,3,3))
+    points,diagnostics=df_residual_points_qr(values,dict(hf=Source()),30,holdout_modulus=11)
+    # Real Gamma pair products span at most six independent symmetric rows.
+    assert 0<len(points)<=6
+    assert np.isfinite(diagnostics['normalized_objective_history']).all()
+    assert np.all(np.diff(diagnostics['normalized_objective_history'])<=1e-12)

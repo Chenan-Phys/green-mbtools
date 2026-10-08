@@ -8,7 +8,7 @@ import time
 import numpy as np
 from .source import LegacyDFSource, CanonicalReconstructionSource
 from .collocation import cell_from_input, uniform_grid, evaluate
-from .selection import PairDensityGram, pivoted_cholesky, df_residual_points
+from .selection import PairDensityGram, pivoted_cholesky, df_residual_points, df_residual_points_qr
 from .fit import fit_source
 from .validate import validate_source, validate_holdout
 from . import io
@@ -81,8 +81,14 @@ def main(argv=None):
     started = time.perf_counter()
     values = evaluate(cell, sources["hf"].k_abs, coords, forward=forward)
     if args.selection == "df-residual":
-        points, selection = df_residual_points(values, sources, args.n_interp, weights, args.pivot_tolerance,
-                                                holdout_modulus=11)
+        try:
+            points, selection = df_residual_points(values, sources, args.n_interp, weights, args.pivot_tolerance,
+                                                    holdout_modulus=11)
+        except ValueError as exc:
+            if str(exc)!="residual selection lost positive semidefiniteness":raise
+            points, selection = df_residual_points_qr(values,sources,args.n_interp,weights,
+                                                       args.pivot_tolerance,holdout_modulus=11)
+            selection['fallback_reason']=str(exc)
     else:
         gram = PairDensityGram(values, [(i, j) for i in range(len(values)) for j in range(len(values))], weights)
         points, selection = pivoted_cholesky(gram, args.n_interp, args.pivot_tolerance)

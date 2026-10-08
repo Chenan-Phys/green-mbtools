@@ -168,3 +168,106 @@ def df_residual_points(values, sources, count, grid_weights=None,
         target_holdout_modulus=holdout_modulus,excluded_target_rows_per_pair=len(excluded),
         normalized_objective_history=remaining,pivot_gains=gains,
         note="Selection loss estimates do not replace held-out/full physical error gates")
+
+
+def df_residual_points_qr(values, sources, count, grid_weights=None,
+                          relative_tolerance=1e-13, holdout_modulus=None):
+    """Stable design-space fallback for nearly dependent implicit Gram pivots.
+
+    Two-pass modified Gram-Schmidt stores selected training feature vectors,
+    never a grid-by-grid Gram. This uses more arithmetic/storage than the
+    implicit path, but avoids squaring the feature condition number. All
+    target observations used here exclude the same held-out rows as training.
+    """
+    values=np.asarray(values)
+    if values.ndim!=3 or not np.isfinite(values).all() or not sources:
+        raise ValueError('finite full-orbital values and DF sources are required')
+    nk,ng,n=values.shape
+    if not 0<count<=ng or not 0<relative_tolerance<1:
+        raise ValueError('invalid residual selection count/tolerance')
+    weights=np.ones(ng) if grid_weights is None else np.asarray(grid_weights)
+    if weights.shape!=(ng,) or not np.isfinite(weights).all() or np.any(weights<=0):
+        raise ValueError('positive finite grid weights are required')
+    sqrt_weights=np.sqrt(weights)
+    keep=~holdout_mask(n,holdout_modulus) if holdout_modulus is not None else np.ones(n*n,dtype=bool)
+    rows=np.flatnonzero(keep)
+    reference=next(iter(sources.values()))
+    norms={}
+    for kind,source in sources.items():
+        if not np.array_equal(source.pair_to_q,reference.pair_to_q):
+            raise ValueError('residual selection requires shared transfer maps')
+        contract=source.gauge_contract
+        if contract is None or not contract.get('verified_common_q_frame',False) or contract.get('signed_metric',False):
+            raise ValueError('residual selection requires an audited common q frame')
+        norm=sum(np.linalg.norm(source.get_pair(i,j).reshape(source.naux,-1)[:,keep])**2
+                 for q in source.iter_transfers() for i,j in source.iter_pairs(q))
+        if not np.isfinite(norm) or norm<=0:raise ValueError('nonzero finite DF targets are required')
+        norms[kind]=float(norm)
+    def features(pairs,start,stop):
+        block=np.concatenate([(values[i,start:stop][:,rows//n].conj()*values[j,start:stop][:,rows%n]).T
+                              for i,j in pairs],axis=0)*sqrt_weights[None,start:stop]
+        return block.astype(complex,copy=False)
+    groups=[]
+    for q in reference.iter_transfers():
+        pairs=list(reference.iter_pairs(q))
+        target=np.concatenate([np.concatenate([source.get_pair(i,j).reshape(source.naux,-1).T[keep]
+                                              for i,j in pairs],axis=0)/np.sqrt(norms[kind])
+                               for kind,source in sources.items()],axis=1)
+        diagonal=np.empty(ng);cross=np.empty((ng,target.shape[1]),complex)
+        for start in range(0,ng,64):
+            stop=min(start+64,ng);block=features(pairs,start,stop)
+            diagonal[start:stop]=np.sum(abs(block)**2,axis=0)
+            cross[start:stop]=block.conj().T@target
+        groups.append(dict(pairs=pairs,target=target,diagonal=diagonal,cross=cross,
+                           scale=max(float(diagonal.max()),np.finfo(float).tiny),
+                           basis=np.zeros((len(rows)*len(pairs),count),complex)))
+    pivots=[];gains=[];history=[float(len(sources))];refreshes=0
+    while len(pivots)<count:
+        scores=np.zeros(ng)
+        for group in groups:
+            scores+=np.divide(np.sum(abs(group['cross'])**2,axis=1),group['diagonal'],
+                out=np.zeros(ng),where=group['diagonal']>relative_tolerance*group['scale'])
+        scores[pivots]=0
+        pivot=int(np.argmax(scores))
+        if not np.isfinite(scores[pivot]):raise ValueError('nonfinite residual selection score')
+        if scores[pivot]<=np.finfo(float).tiny:break
+        step=len(pivots);updates=[]
+        for group in groups:
+            basis=group['basis'][:,:step]
+            vector=features(group['pairs'],pivot,pivot+1)[:,0]
+            for _ in range(2):vector-=basis@(basis.conj().T@vector)
+            norm=float(np.vdot(vector,vector).real)
+            group['diagonal'][pivot]=norm
+            if norm<=relative_tolerance*group['scale']:continue
+            unit=vector/np.sqrt(norm)
+            coefficient=unit.conj()@group['target']
+            updates.append((group,unit,coefficient))
+        if not updates:continue  # Exact training-space norm rejects this pivot.
+        pivots.append(pivot)
+        gain=sum(float(np.vdot(coefficient,coefficient).real) for _,_,coefficient in updates)
+        gains.append(gain);history.append(max(0.,history[-1]-gain))
+        for group,unit,coefficient in updates:
+            group['basis'][:,step]=unit
+            for start in range(0,ng,64):
+                stop=min(start+64,ng)
+                column=features(group['pairs'],start,stop).conj().T@unit
+                group['cross'][start:stop]-=column[:,None]*coefficient[None,:]
+                group['diagonal'][start:stop]-=abs(column)**2
+            if group['diagonal'].min() < -1e-10*group['scale']:
+                # Recompute positive residual norms rather than widening the
+                # PSD tolerance or trusting cancellation of two large norms.
+                basis=group['basis'][:,:step+1]
+                for start in range(0,ng,32):
+                    stop=min(start+32,ng);block=features(group['pairs'],start,stop)
+                    for _ in range(2):block-=basis@(basis.conj().T@block)
+                    group['diagonal'][start:stop]=np.sum(abs(block)**2,axis=0)
+                refreshes+=1
+            np.maximum(group['diagonal'],0,out=group['diagonal'])
+            group['diagonal'][pivots]=0
+    if not pivots:raise ValueError('zero residual selection objective')
+    return np.asarray(pivots,dtype=np.int64),dict(method='df_residual_gain_reorthogonalized_qr',
+        requested_count=count,accepted_count=len(pivots),relative_tolerance=relative_tolerance,
+        source_norms_sq=norms,target_holdout_modulus=holdout_modulus,
+        excluded_target_rows_per_pair=int((~keep).sum()),normalized_objective_history=history,
+        pivot_gains=gains,residual_norm_refreshes=refreshes,
+        note='Design-space QR fallback; selection loss does not replace export/physical error gates')
