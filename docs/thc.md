@@ -67,6 +67,15 @@ exporting arbitrary standalone CDERI objects.
 Run `python -m pytest tests/thc -q`. The fixture generator in `examples/thc`
 supports Gamma, complex/shifted meshes, both spin conventions and GF2 sidecars.
 Run generation and numerical validation on a compute workstation.
+`--basis gth-dzvp --auxiliary default --reciprocal-grid 21` selects a larger
+physical fixture with GREEN's augmented even-tempered auxiliary basis;
+the default compact auxiliary basis preserves the original small oracle.
+Source-map audit tolerances may be declared with `--source-atol` and
+`--eri-atol`, and are recorded in provenance. Fitting tolerances are separately
+declared by the fit CLI and its acceptance gate remains enforced.
+The integral writer zero-pads a corrected diagonal block before replacing bare
+rows when the corrected auxiliary metric retains fewer rows. This prevents
+stale bare rows in the corrected archive.
 
 Consumers require coordinated THC feature revisions of green-symmetry,
 green-mbpt and green-gpu. Use explicit
@@ -75,7 +84,9 @@ Default DF behavior is preserved. Reconstruction supports CPU HF/GW/GF2 and
 GPU HF/GW or GPU-HF/CPU-GF2. Native HF/GW supports scalar full BZ and double
 precision (`--P_sp false --Sigma_sp false`). Native GW also supports optional
 `--thc_gw_k_contraction fft` on a full closed regular mesh with a declared
-workspace budget. Momentum FFTs run on the host for both CPU and GPU consumers;
-GPU projection/screening/backprojection still run on CUDA. Native HF stays
+workspace budget. CPU momentum FFTs use optional batched FFTW or Eigen fallback;
+native GPU stages stay resident and use batched cuFFT. Native GW also supports
+`--thc_gw_screening auto|point|auxiliary`, choosing the smaller exact screening
+solve in auto mode. Native HF stays
 direct. Native GF2, extrapolation/AqQ, point-space symmetry, direct real-space
 construction and all-electron adaptation are separate work.

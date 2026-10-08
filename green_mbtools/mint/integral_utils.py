@@ -402,6 +402,9 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
             # s1 = NQ at maximum.
             s1 += Lpq.shape[0]
         if apply_correction and np.allclose(k1, k2) :
+            # The corrected metric can retain fewer rows than the bare metric.
+            # Clear all original-Q padding before replacing the diagonal block.
+            buffer[cnt % chunk_size].fill(0.0)
             s1 = 0
             for XXX in correction_df.sr_loop((k1,k1), max_memory=4000, compact=False):
                 LpqR = XXX[0]
