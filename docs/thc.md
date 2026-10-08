@@ -90,3 +90,24 @@ native GPU stages stay resident and use batched cuFFT. Native GW also supports
 solve in auto mode. Native HF stays
 direct. Native GF2, extrapolation/AqQ, point-space symmetry, direct real-space
 construction and all-electron adaptation are separate work.
+
+The optional fit flag `--selection df-residual` chooses shared real-space points
+by the reduction in the existing DF least-squares residual. The default remains
+`pair-density`. Each transfer has a separate orthogonal projection; HF and
+correlation targets are normalized by their training Frobenius norms. Selection
+stores implicit Gram columns and point-by-Q cross products, rather than a full
+grid Gram. The orbital collocation remains separable and cores still share the
+audited original auxiliary frame.
+
+The CLI excludes the deterministic modulus-11 held-out DF rows from selection
+as well as from training. Perturbing those observations must not change the
+chosen points. Full-data refitting, held-out/full factor gates, covariance gates,
+precision and atomic export rules remain unchanged. Predicted selection loss
+does not establish physical accuracy; compare HF/GW against the original DF
+interaction using the same error requirements. Rejected candidates are retained
+as evidence and are not exported. Rank reduction is conditional on those gates.
+
+`examples/thc/prepare_fixture.py --replicas N` creates a separate Si supercell
+along the first primitive lattice vector, with N in 1..4. Its default remains
+one primitive cell. This supports a physical basis-size series independently
+of a k-mesh series; all heavy preparation and fitting belongs on the workstation.

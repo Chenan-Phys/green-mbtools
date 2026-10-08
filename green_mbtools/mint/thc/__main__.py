@@ -8,7 +8,7 @@ import time
 import numpy as np
 from .source import LegacyDFSource, CanonicalReconstructionSource
 from .collocation import cell_from_input, uniform_grid, evaluate
-from .selection import PairDensityGram, pivoted_cholesky
+from .selection import PairDensityGram, pivoted_cholesky, df_residual_points
 from .fit import fit_source
 from .validate import validate_source, validate_holdout
 from . import io
@@ -27,6 +27,8 @@ def main(argv=None):
     fit.add_argument("--n-interp", type=int, required=True)
     fit.add_argument("--rcond", type=float, default=1e-12)
     fit.add_argument("--pivot-tolerance", type=float, default=1e-13)
+    fit.add_argument("--selection", choices=("pair-density", "df-residual"), default="pair-density",
+                     help="Optional DF-residual point selection; export accuracy gates are unchanged")
     fit.add_argument("--atol", type=float, default=1e-8)
     fit.add_argument("--rtol", type=float, default=1e-6)
     fit.add_argument("--row-block", type=int, default=512)
@@ -78,8 +80,12 @@ def main(argv=None):
     coords, weights = uniform_grid(cell, args.grid)
     started = time.perf_counter()
     values = evaluate(cell, sources["hf"].k_abs, coords, forward=forward)
-    gram = PairDensityGram(values, [(i, j) for i in range(len(values)) for j in range(len(values))], weights)
-    points, selection = pivoted_cholesky(gram, args.n_interp, args.pivot_tolerance)
+    if args.selection == "df-residual":
+        points, selection = df_residual_points(values, sources, args.n_interp, weights, args.pivot_tolerance,
+                                                holdout_modulus=11)
+    else:
+        gram = PairDensityGram(values, [(i, j) for i in range(len(values)) for j in range(len(values))], weights)
+        points, selection = pivoted_cholesky(gram, args.n_interp, args.pivot_tolerance)
     X = values[:, points, :]
     constructor = dict(grid_shape=args.grid, grid_origin=[0, 0, 0], units="bohr",
                        quadrature_weights=weights[points].tolist(), points=points.tolist(),

@@ -22,6 +22,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--nk", type=int, nargs=3, default=[3,1,1])
+    parser.add_argument("--replicas", type=int, default=1,
+                        help="Repeat the Si primitive cell along its first lattice vector (1..4)")
     parser.add_argument("--gf2-correction", action="store_true")
     parser.add_argument("--shift", type=float, nargs=3, default=[0.,0.,0.])
     parser.add_argument("--restricted", action="store_true")
@@ -30,9 +32,13 @@ def main():
     parser.add_argument("--reciprocal-grid", type=int, default=15)
     parser.add_argument("--source-atol", type=float, default=1e-9)
     parser.add_argument("--eri-atol", type=float, default=1e-8)
+    parser.add_argument("--cell-precision", type=float,
+                        help="Optional tighter PySCF integral precision for a fresh fixture")
     parser.add_argument("--resume-validation", action="store_true",
                         help="Validate an existing unfinished fixture without regenerating its integrals")
     args = parser.parse_args()
+    if not 1<=args.replicas<=4:
+        raise ValueError("replicas must be in 1..4")
     output = Path(args.output).resolve()
     if args.resume_validation:
         if not (output/'input.h5').exists() or (output/'gauge_contract.json').exists():
@@ -42,8 +48,15 @@ def main():
     os.chdir(output)
     a = 5.43
     lattice = np.array([[0,a/2,a/2],[a/2,0,a/2],[a/2,a/2,0]])
+    translation=lattice[0].copy()
+    atoms=[]
+    for replica in range(args.replicas):
+        for base in (np.zeros(3),np.full(3,a/4)):
+            position=base+replica*translation
+            atoms.append("Si "+" ".join(map(str,position)))
+    lattice[0]*=args.replicas
     params = ["--a", "\n".join(", ".join(map(str,row)) for row in lattice),
-              "--atom", f"Si 0 0 0\nSi {a/4} {a/4} {a/4}",
+              "--atom", "\n".join(atoms),
               "--basis", args.basis, "--pseudo", "gth-pade", "--nk", *map(str,args.nk),
               "--Nk", str(args.reciprocal_grid), "--keep_cderi", "true", "--use_j2c_eig_decomposition", "false",
               "--space_symm", "false", "--tr_symm", "false", "--memory", "1"]
@@ -59,6 +72,11 @@ def main():
         init_args.finite_size_kind = ['gf2']
     started = time.perf_counter()
     producer = pyscf_pbc_init(init_args)
+    if args.cell_precision is not None:
+        if args.resume_validation or not 0 < args.cell_precision < 1:
+            raise ValueError("cell-precision requires a fresh fixture and a value in (0,1)")
+        producer.cell.precision = args.cell_precision
+        producer.cell.build()
     if not args.resume_validation:
         producer.mean_field_input()
     if args.gf2_correction and not args.resume_validation:
@@ -114,9 +132,10 @@ def main():
                               correction=("GF2 original-Q df_ewald sidecar; bare normal core" if args.gf2_correction else "producer Ewald q0 already included") if kind=='correlation' else "bare plus solver Madelung")
         comparisons[kind] = dict(source_adapter_max_absolute=maximum,chemists_eri=cross)
     (output / 'gauge_contract.json').write_text(json.dumps(contract,indent=2)+'\n')
-    (output / 'cell_spec.json').write_text(json.dumps(dict(cell=cell.dumps(),nk=args.nk,shift=args.shift,restricted=args.restricted,
+    (output / 'cell_spec.json').write_text(json.dumps(dict(cell=cell.dumps(),nk=args.nk,replicas=args.replicas,shift=args.shift,restricted=args.restricted,
                                                        basis=args.basis,auxiliary=args.auxiliary,auxbasis=df.auxbasis,
-                                                       reciprocal_mesh=[args.reciprocal_grid]*3),indent=2)+'\n')
+                                                       reciprocal_mesh=[args.reciprocal_grid]*3,
+                                                       cell_precision=cell.precision),indent=2)+'\n')
     (output / 'source_validation.json').write_text(json.dumps(dict(comparisons=comparisons,seconds=time.perf_counter()-started),indent=2)+'\n')
     print(json.dumps(comparisons,indent=2))
 
